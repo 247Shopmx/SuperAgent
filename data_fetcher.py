@@ -28,14 +28,19 @@ class ESPNScraper:
         self.logger.setLevel(logging.INFO)
 
         # Configurar handler para logging
-        handler = logging.StreamHandler()
-        formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-        handler.setFormatter(formatter)
-        self.logger.addHandler(handler)
+        if not self.logger.handlers:
+            handler = logging.StreamHandler()
+            formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+            handler.setFormatter(formatter)
+            self.logger.addHandler(handler)
+        
+        # Rate limiting
+        self.last_request_time = 0
+        self.request_interval = 1.0  # 1 segundo entre peticiones
 
     def _get_soup(self, url: str) -> Optional[BeautifulSoup]:
         """
-        Obtiene el objeto BeautifulSoup para una URL dada.
+        Obtiene el objeto BeautifulSoup para una URL dada con rate limiting.
 
         Args:
             url (str): URL a la que se hará el request.
@@ -43,17 +48,36 @@ class ESPNScraper:
         Returns:
             Optional[BeautifulSoup]: Objeto BeautifulSoup o None si falla.
         """
+        current_time = time.time()
+        time_since_last = current_time - self.last_request_time
+        
+        if time_since_last < self.request_interval:
+            time.sleep(self.request_interval - time_since_last)
+        
         try:
-            response = requests.get(url, headers=self.headers, timeout=10)
+            response = requests.get(
+                url, 
+                headers=self.headers, 
+                timeout=15,
+                allow_redirects=True
+            )
+            self.last_request_time = time.time()
+            
+            # Verificar si estamos bloqueados
+            if response.status_code == 429:
+                self.logger.warning("Rate limited por ESPN, esperando 60 segundos")
+                time.sleep(60)
+                return None
+                
             response.raise_for_status()
             return BeautifulSoup(response.text, 'html.parser')
         except requests.RequestException as e:
-            self.logger.error(f"Error fetching URL {url}: {e}")
+            self.logger.error(f"Error obteniendo URL {url}: {e}")
             return None
 
     def fetch_scoreboard(self, date: Optional[str] = None) -> List[Dict]:
         """
-        Obtiene los partidos del día (o fecha específica) desde ESPN.
+        Obtiene los partidos del día desde ESPN con manejo robusto de errores.
 
         Args:
             date (str, optional): Fecha en formato YYYYMMDD. Si es None, usa la fecha actual.
@@ -71,33 +95,52 @@ class ESPNScraper:
             return []
 
         matches = []
-        # Selector para los contenedores de partidos en ESPN
-        match_containers = soup.select('div[class*="MatchupRow"]')
-
+        
+        # Intentar múltiples selectores (ESPN cambia su estructura)
+        selectors = [
+            'div[class*="ScoreCell"]',
+            'div[class*="MatchupRow"]',
+            'section[data-testid="Scoreboard"] div',
+            '.main-content div'
+        ]
+        
+        match_containers = []
+        for selector in selectors:
+            match_containers = soup.select(selector)
+            if match_containers:
+                break
+        
+        if not match_containers:
+            self.logger.warning("No se encontraron contenedores de partidos")
+            return []
+        
         for container in match_containers:
             try:
-                # Extraer información básica del partido
-                home_team = container.select_one('div[class*="home"] a').text.strip()
-                away_team = container.select_one('div[class*="away"] a').text.strip()
-
-                # Extraer scores (pueden no estar disponibles para partidos futuros)
-                home_score = container.select_one('div[class*="home"] .score')
-                home_score = home_score.text.strip() if home_score else "0"
-                away_score = container.select_one('div[class*="away"] .score')
-                away_score = away_score.text.strip() if away_score else "0"
-
-                # Extraer estado del partido (en vivo, finalizado, etc.)
-                status = container.select_one('div[class*="status"]')
-                status = status.text.strip() if status else "Scheduled"
-
+                # Extraer información con selectores más genéricos
+                team_elements = container.select('a[href*="/soccer/team/"]')
+                if len(team_elements) < 2:
+                    continue
+                    
+                home_team = team_elements[0].text.strip()
+                away_team = team_elements[1].text.strip()
+                
+                # Extraer scores con manejo de errores
+                scores = container.select('.ScoreCell__Score, [class*="score"]')
+                home_score = scores[0].text.strip() if len(scores) > 0 else "0"
+                away_score = scores[1].text.strip() if len(scores) > 1 else "0"
+                
+                # Extraer estado
+                status_elem = container.select_one('[class*="status"], [class*="Status"]')
+                status = status_elem.text.strip() if status_elem else "Scheduled"
+                
                 # Extraer liga
-                league = container.select_one('div[class*="competition"] a')
-                league = league.text.strip() if league else "Unknown"
-
+                league_elem = container.select_one('[class*="league"], [class*="competition"]')
+                league = league_elem.text.strip() if league_elem else "Unknown"
+                
                 # Extraer hora
-                time_element = container.select_one('div[class*="time"]')
-                match_time = time_element.text.strip() if time_element else "TBD"
-
+                time_elem = container.select_one('[class*="time"], [class*="Time"]')
+                match_time = time_elem.text.strip() if time_elem else "TBD"
+                
                 matches.append({
                     'home_team': home_team,
                     'away_team': away_team,
@@ -110,10 +153,10 @@ class ESPNScraper:
                     'source': 'ESPN'
                 })
             except Exception as e:
-                self.logger.warning(f"Error parsing match container: {e}")
+                self.logger.debug(f"Error parseando contenedor: {e}")
                 continue
-
-        self.logger.info(f"Fetched {len(matches)} matches from ESPN")
+        
+        self.logger.info(f"Obtenidos {len(matches)} partidos de ESPN")
         return matches
 
     def fetch_team_stats(self, team_name: str, season: str = "2023") -> List[Dict]:
@@ -235,6 +278,7 @@ class ESPNScraper:
 
         return matches
 
+
 class OddsAPIClient:
     """
     Clase para interactuar con la API de Odds API.
@@ -247,7 +291,7 @@ class OddsAPIClient:
         if not self.api_key:
             raise ValueError("ODDS_API_KEY environment variable not set")
 
-        self.base_url = "https://api.the-odds-api.com/v4/sports/soccer/odds/"
+        self.base_url = "https://api.the-odds-api.com/v4/sports/soccer_epl/odds/"
         self.logger = logging.getLogger(__name__)
         self.logger.setLevel(logging.INFO)
 
@@ -280,11 +324,13 @@ class OddsAPIClient:
             response.raise_for_status()
             data = response.json()
 
-            if data.get('success') is not True:
-                self.logger.error(f"Odds API error: {data.get('message', 'Unknown error')}")
+            if isinstance(data, list):
+                return data
+            elif isinstance(data, dict) and 'data' in data:
+                return data.get('data', [])
+            else:
+                self.logger.error(f"Unexpected API response format: {type(data)}")
                 return []
-
-            return data.get('data', [])
         except requests.RequestException as e:
             self.logger.error(f"Error fetching odds from API: {e}")
             return []
