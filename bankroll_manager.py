@@ -4,6 +4,7 @@ from typing import Dict, List, Optional, Tuple
 import logging
 from datetime import datetime
 import os
+import pickle
 
 class BankrollManager:
     """Gestión de banca, apuestas y control de riesgo."""
@@ -33,7 +34,7 @@ class BankrollManager:
         method: str = 'kelly'
     ) -> float:
         """
-        Calcula el monto a apostar usando diferentes métodos.
+        Calcula el monto a apostar usando diferentes métodos con verificaciones de seguridad.
 
         Args:
             odds: Cuota decimal (ej: 2.0).
@@ -43,14 +44,25 @@ class BankrollManager:
         Returns:
             float: Monto a apostar.
         """
+        if odds <= 1.0 or probability <= 0 or probability >= 1:
+            self.logger.warning("Parámetros inválidos para cálculo de stake")
+            return 0.0
+        
         if method == 'kelly':
-            # Fórmula de Kelly: f* = (bp - q) / b
-            # donde b = odds - 1, p = probabilidad estimada, q = 1 - p
-            b = odds - 1
-            f_star = (b * probability - (1 - probability)) / b
-            # Limitar a riesgo máximo
-            max_fraction = self.risk_per_bet
+            b = odds - 1  # Beneficio por unidad apostada
+            p = probability
+            q = 1 - p
+            
+            if b <= 0:
+                return 0.0
+                
+            # Fórmula corregida: f* = (bp - q) / b
+            f_star = (b * p - q) / b
+            
+            # Limitar a riesgo máximo y mínimo
+            max_fraction = min(self.risk_per_bet, 0.05)  # Máximo 5% por apuesta
             f_star = max(0, min(f_star, max_fraction))
+            
             return f_star * self.current_bankroll
 
         elif method == 'fixed':
@@ -244,7 +256,7 @@ class BankrollManager:
         return False
 
     def save_state(self, filepath: str) -> bool:
-        """Guarda el estado del bankroll y el historial de apuestas."""
+        """Guarda el estado del bankroll de forma segura."""
         try:
             os.makedirs(os.path.dirname(filepath), exist_ok=True)
             state = {
@@ -253,7 +265,10 @@ class BankrollManager:
                 'risk_per_bet': self.risk_per_bet,
                 'bet_history': self.bet_history
             }
-            pd.to_pickle(state, filepath)
+            
+            with open(filepath, 'wb') as f:
+                pickle.dump(state, f, protocol=pickle.HIGHEST_PROTOCOL)
+                
             self.logger.info(f"Bankroll state saved to {filepath}")
             return True
         except Exception as e:
@@ -261,15 +276,32 @@ class BankrollManager:
             return False
 
     def load_state(self, filepath: str) -> bool:
-        """Carga el estado del bankroll y el historial de apuestas."""
+        """Carga el estado del bankroll de forma segura."""
         try:
-            state = pd.read_pickle(filepath)
+            # Verificar integridad del archivo
+            with open(filepath, 'rb') as f:
+                data = f.read()
+                if len(data) < 10:
+                    return False
+            
+            # Cargar de forma segura
+            with open(filepath, 'rb') as f:
+                state = pickle.load(f)
+            
+            # Validar estructura de datos
+            required_keys = ['initial_bankroll', 'current_bankroll', 'risk_per_bet']
+            if not all(key in state for key in required_keys):
+                self.logger.error("Archivo de estado corrupto")
+                return False
+                
             self.initial_bankroll = state['initial_bankroll']
             self.current_bankroll = state['current_bankroll']
             self.risk_per_bet = state['risk_per_bet']
-            self.bet_history = state['bet_history']
-            self.logger.info(f"Bankroll state loaded from {filepath}")
+            if 'bet_history' in state:
+                self.bet_history = state['bet_history']
+                
+            self.logger.info(f"Estado cargado desde {filepath}")
             return True
         except Exception as e:
-            self.logger.error(f"Error loading bankroll state: {e}")
+            self.logger.error(f"Error cargando estado: {e}")
             return False
