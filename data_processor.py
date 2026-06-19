@@ -173,23 +173,126 @@ class DataProcessor:
             merged_df.drop(['match_key'], axis=1, inplace=True, errors='ignore')
             
             self.logger.info(f"Merged data successfully. Shape: {merged_df.shape}")
-            return merged_df  # CORREGIDO: Retorna el DataFrame procesado
+            return merged_df
 
         except Exception as e:
             self.logger.error(f"Error merging match and odds data: {e}")
             return matches_df
 
-    def calculate_team_stats(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Calcula estadísticas históricas por equipo de forma segura."""
-        # Se añade esta función para blindar el error de data_processor.py
-        if df.empty or 'result' not in df.columns:
-            self.logger.error("Error al calcular las estadísticas del equipo: 'result' no encontrado en el DataFrame")
+    def calculate_team_stats(self, df: pd.DataFrame, window: int = 5) -> pd.DataFrame:
+        """
+        Calcula estadísticas históricas por equipo de forma segura.
+        
+        Args:
+            df: DataFrame con datos históricos de partidos
+            window: Ventana de partidos recientes a considerar
+            
+        Returns:
+            DataFrame con estadísticas por equipo
+        """
+        if df.empty or 'result' not in df.columns or 'home_team' not in df.columns:
+            self.logger.error("DataFrame inválido o faltan columnas requeridas")
             return pd.DataFrame()
         
         try:
-            # Tu lógica para promediar ataques/defensas de Poisson irá aquí de forma segura
-            self.logger.info("Estadísticas de equipo calculadas con éxito.")
+            stats_list = []
+            
+            for team in pd.concat([df['home_team'], df['away_team']]).unique():
+                team_matches = df[
+                    (df['home_team'] == team) | (df['away_team'] == team)
+                ].tail(window)
+                
+                if len(team_matches) < 2:
+                    continue
+                    
+                home_matches = team_matches[team_matches['home_team'] == team]
+                away_matches = team_matches[team_matches['away_team'] == team]
+                
+                stats = {
+                    'team': team,
+                    'matches_played': len(team_matches),
+                    'home_attack_strength': home_matches['home_goals'].mean() if not home_matches.empty else 0,
+                    'home_defense_strength': home_matches['away_goals'].mean() if not home_matches.empty else 0,
+                    'away_attack_strength': away_matches['away_goals'].mean() if not away_matches.empty else 0,
+                    'away_defense_strength': away_matches['home_goals'].mean() if not away_matches.empty else 0,
+                    'home_form': (home_matches['result'] == 1).mean() if not home_matches.empty else 0.5,
+                    'away_form': (away_matches['result'] == -1).mean() if not away_matches.empty else 0.5,
+                }
+                stats_list.append(stats)
+            
+            stats_df = pd.DataFrame(stats_list)
+            self.logger.info(f"Estadísticas calculadas para {len(stats_df)} equipos")
+            return stats_df
+            
+        except Exception as e:
+            self.logger.error(f"Error calculando estadísticas: {e}")
+            return pd.DataFrame()
+
+    def prepare_features(self, matches_df: pd.DataFrame, team_stats_df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Prepara características para el entrenamiento de modelos.
+        
+        Args:
+            matches_df: DataFrame con datos de partidos
+            team_stats_df: DataFrame con estadísticas de equipos
+            
+        Returns:
+            DataFrame con características preparadas
+        """
+        if matches_df.empty:
+            self.logger.warning("No match data to prepare features")
+            return pd.DataFrame()
+        
+        try:
+            features_df = matches_df.copy()
+            
+            # Unir estadísticas de equipos
+            if not team_stats_df.empty:
+                # Estadísticas del equipo local
+                features_df = features_df.merge(
+                    team_stats_df.add_prefix('home_'),
+                    left_on='home_team',
+                    right_on='home_team',
+                    how='left'
+                )
+                
+                # Estadísticas del equipo visitante
+                features_df = features_df.merge(
+                    team_stats_df.add_prefix('away_'),
+                    left_on='away_team',
+                    right_on='away_team',
+                    how='left'
+                )
+            
+            # Rellenar valores nulos con defaults
+            numeric_cols = features_df.select_dtypes(include=[np.number]).columns
+            features_df[numeric_cols] = features_df[numeric_cols].fillna(0)
+            
+            self.logger.info(f"Features prepared. Shape: {features_df.shape}")
+            return features_df
+            
+        except Exception as e:
+            self.logger.error(f"Error preparing features: {e}")
+            return pd.DataFrame()
+
+    def save_to_csv(self, df: pd.DataFrame, filepath: str) -> bool:
+        """Guarda DataFrame en archivo CSV."""
+        try:
+            import os
+            os.makedirs(os.path.dirname(filepath), exist_ok=True)
+            df.to_csv(filepath, index=False)
+            self.logger.info(f"Data saved to {filepath}")
+            return True
+        except Exception as e:
+            self.logger.error(f"Error saving to CSV: {e}")
+            return False
+
+    def load_from_csv(self, filepath: str) -> pd.DataFrame:
+        """Carga DataFrame desde archivo CSV."""
+        try:
+            df = pd.read_csv(filepath)
+            self.logger.info(f"Data loaded from {filepath}. Shape: {df.shape}")
             return df
         except Exception as e:
-            self.logger.error(f"Error en calculo interno: {e}")
+            self.logger.error(f"Error loading from CSV: {e}")
             return pd.DataFrame()
