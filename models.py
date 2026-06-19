@@ -47,19 +47,19 @@ class PoissonModel:
             X_scaled = self.scaler.fit_transform(X)
 
             # Ajustar modelos de Poisson para goles local y visitante
-            # Usamos regresión lineal para predecir lambda (parámetro de Poisson)
             from sklearn.linear_model import PoissonRegressor
 
-            self.home_goals_model = PoissonRegressor()
+            self.home_goals_model = PoissonRegressor(max_iter=500)
             self.home_goals_model.fit(X_scaled, y_home)
 
-            self.away_goals_model = PoissonRegressor()
+            self.away_goals_model = PoissonRegressor(max_iter=500)
             self.away_goals_model.fit(X_scaled, y_away)
 
             self.logger.info("Poisson model trained successfully")
 
         except Exception as e:
             self.logger.error(f"Error training Poisson model: {e}")
+            raise
 
     def predict(self, X: pd.DataFrame) -> Tuple[np.ndarray, np.ndarray]:
         """
@@ -78,10 +78,15 @@ class PoissonModel:
             X_scaled = self.scaler.transform(X)
             home_lambda = self.home_goals_model.predict(X_scaled)
             away_lambda = self.away_goals_model.predict(X_scaled)
+            
+            # Asegurar que lambdas sean positivos
+            home_lambda = np.maximum(home_lambda, 0.1)
+            away_lambda = np.maximum(away_lambda, 0.1)
+            
             return home_lambda, away_lambda
         except Exception as e:
             self.logger.error(f"Error predicting with Poisson model: {e}")
-            return np.zeros(len(X)), np.zeros(len(X))
+            return np.ones(len(X)) * 1.5, np.ones(len(X)) * 1.5
 
     def predict_proba(
         self,
@@ -89,7 +94,7 @@ class PoissonModel:
         max_goals: int = 10
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """
-        Predice probabilidades de resultado (1, 0, -1) usando Poisson.
+        Predice probabilidades de resultado (home_win, draw, away_win) usando Poisson.
 
         Args:
             X: DataFrame con características.
@@ -109,15 +114,16 @@ class PoissonModel:
             home_goals_proba = poisson.pmf(range(max_goals), h_lambda)
             away_goals_proba = poisson.pmf(range(max_goals), a_lambda)
 
-            # Probabilidad de que el local gane (home_goals > away_goals)
+            # Probabilidad de cada resultado
             for home in range(max_goals):
                 for away in range(max_goals):
+                    joint_prob = home_goals_proba[home] * away_goals_proba[away]
                     if home > away:
-                        prob_home_win[i] += home_goals_proba[home] * away_goals_proba[away]
+                        prob_home_win[i] += joint_prob
                     elif home == away:
-                        prob_draw[i] += home_goals_proba[home] * away_goals_proba[away]
+                        prob_draw[i] += joint_prob
                     else:
-                        prob_away_win[i] += home_goals_proba[home] * away_goals_proba[away]
+                        prob_away_win[i] += joint_prob
 
         return prob_home_win, prob_draw, prob_away_win
 
@@ -149,6 +155,7 @@ class PoissonModel:
             self.logger.error(f"Error loading Poisson model: {e}")
             return False
 
+
 class XGBoostModel:
     """Modelo XGBoost para predecir el resultado del partido (1, 0, -1)."""
 
@@ -163,7 +170,8 @@ class XGBoostModel:
             subsample=0.8,
             colsample_bytree=0.8,
             random_state=42,
-            n_jobs=-1
+            n_jobs=-1,
+            verbosity=0
         )
         self.scaler = StandardScaler()
         self.classes_ = np.array([-1, 0, 1])  # Orden: away win, draw, home win
@@ -191,9 +199,12 @@ class XGBoostModel:
             if features:
                 X = X[features]
 
+            # Convertir y a índices (0, 1, 2)
+            y_encoded = y.map({-1: 0, 0: 1, 1: 2})
+
             # Dividir datos
             X_train, X_test, y_train, y_test = train_test_split(
-                X, y, test_size=test_size, random_state=42
+                X, y_encoded, test_size=test_size, random_state=42, stratify=y_encoded
             )
 
             # Escalar características
@@ -201,7 +212,12 @@ class XGBoostModel:
             X_test_scaled = self.scaler.transform(X_test)
 
             # Entrenar modelo
-            self.model.fit(X_train_scaled, y_train)
+            self.model.fit(
+                X_train_scaled, 
+                y_train,
+                eval_set=[(X_test_scaled, y_test)],
+                verbose=False
+            )
 
             # Evaluar
             y_pred = self.model.predict(X_test_scaled)
@@ -222,7 +238,7 @@ class XGBoostModel:
 
     def predict_proba(self, X: pd.DataFrame) -> np.ndarray:
         """
-        Predice probabilidades para cada clase (-1, 0, 1).
+        Predice probabilidades para cada clase (away_win, draw, home_win).
 
         Args:
             X: DataFrame con características.
@@ -232,10 +248,17 @@ class XGBoostModel:
         """
         try:
             X_scaled = self.scaler.transform(X)
-            return self.model.predict_proba(X_scaled)
+            proba = self.model.predict_proba(X_scaled)
+            
+            # Verificar que las probabilidades sumen 1
+            row_sums = proba.sum(axis=1, keepdims=True)
+            if not np.allclose(row_sums, 1.0):
+                proba = proba / row_sums
+                
+            return proba
         except Exception as e:
             self.logger.error(f"Error predicting with XGBoost model: {e}")
-            return np.zeros((len(X), 3))
+            return np.ones((len(X), 3)) / 3
 
     def save(self, filepath: str) -> bool:
         """Guarda el modelo y el scaler en un archivo."""
@@ -265,6 +288,7 @@ class XGBoostModel:
             self.logger.error(f"Error loading XGBoost model: {e}")
             return False
 
+
 class LSTMModel:
     """Modelo LSTM para predecir tendencias temporales en resultados."""
 
@@ -282,7 +306,7 @@ class LSTMModel:
             LSTM(32, return_sequences=False),
             Dropout(0.2),
             Dense(32, activation='relu'),
-            Dense(3, activation='softmax')  # 3 clases: -1, 0, 1
+            Dense(3, activation='softmax')  # 3 clases: away_win(0), draw(1), home_win(2)
         ])
 
         model.compile(
@@ -311,12 +335,16 @@ class LSTMModel:
             Tuple[np.ndarray, np.ndarray]: (X_sequences, y_sequences)
         """
         X_scaled = self.scaler.fit_transform(X)
+        
+        # Convertir y a índices (0, 1, 2)
+        y_encoded = y.map({-1: 0, 0: 1, 1: 2}).values
+        
         X_sequences = []
         y_sequences = []
 
         for i in range(len(X_scaled) - window_size):
             X_sequences.append(X_scaled[i:i+window_size])
-            y_sequences.append(y.iloc[i+window_size])
+            y_sequences.append(y_encoded[i+window_size])
 
         return np.array(X_sequences), np.array(y_sequences)
 
@@ -351,6 +379,15 @@ class LSTMModel:
 
             # Preparar secuencias
             X_seq, y_seq = self.prepare_sequences(X, y, window_size)
+            
+            if len(X_seq) == 0:
+                self.logger.error("No hay suficientes datos para crear secuencias")
+                return {
+                    'train_loss': float('inf'),
+                    'val_loss': float('inf'),
+                    'train_accuracy': 0.0,
+                    'val_accuracy': 0.0
+                }
 
             # Entrenar modelo
             history = self.model.fit(
@@ -390,7 +427,7 @@ class LSTMModel:
 
     def predict_proba(self, X: pd.DataFrame, window_size: int = 5) -> np.ndarray:
         """
-        Predice probabilidades para cada clase (-1, 0, 1).
+        Predice probabilidades para cada clase (away_win, draw, home_win).
 
         Args:
             X: DataFrame con características.
@@ -401,20 +438,36 @@ class LSTMModel:
         """
         try:
             X_scaled = self.scaler.transform(X)
+            
+            # Si hay menos muestras que el window_size, repetir para crear secuencia
+            if len(X_scaled) < window_size:
+                X_scaled = np.vstack([X_scaled, 
+                                     np.tile(X_scaled[-1:], (window_size - len(X_scaled), 1))])
+            
             X_seq = []
-
-            # Crear secuencias para predicción
             for i in range(len(X_scaled) - window_size + 1):
                 X_seq.append(X_scaled[i:i+window_size])
-
+            
             if not X_seq:
-                return np.zeros((0, 3))
-
+                return np.ones((len(X), 3)) / 3  # Probabilidades uniformes
+                
             X_seq = np.array(X_seq)
-            return self.model.predict(X_seq)
+            
+            # Ajustar forma si es necesario
+            if len(X_seq.shape) == 2:
+                X_seq = X_seq.reshape(X_seq.shape[0], 1, X_seq.shape[1])
+                
+            proba = self.model.predict(X_seq, verbose=0)
+            
+            # Normalizar para asegurar que sumen 1
+            row_sums = proba.sum(axis=1, keepdims=True)
+            if not np.allclose(row_sums, 1.0):
+                proba = proba / row_sums
+                
+            return proba
         except Exception as e:
             self.logger.error(f"Error predicting with LSTM model: {e}")
-            return np.zeros((len(X), 3))
+            return np.ones((len(X), 3)) / 3
 
     def save(self, filepath: str) -> bool:
         """Guarda el modelo y el scaler en un archivo."""
@@ -445,6 +498,7 @@ class LSTMModel:
             self.logger.error(f"Error loading LSTM model: {e}")
             return False
 
+
 class ModelEnsemble:
     """Combina predicciones de Poisson, XGBoost y LSTM."""
 
@@ -462,7 +516,7 @@ class ModelEnsemble:
             poisson_model: Modelo de Poisson.
             xgboost_model: Modelo XGBoost.
             lstm_model: Modelo LSTM.
-            weights: Pesos para cada modelo (ej: {'poisson': 0.4, 'xgboost': 0.4, 'lstm': 0.2}).
+            weights: Pesos para cada modelo.
         """
         self.poisson_model = poisson_model
         self.xgboost_model = xgboost_model
@@ -472,43 +526,78 @@ class ModelEnsemble:
 
     def predict_proba(self, X: pd.DataFrame) -> np.ndarray:
         """
-        Predice probabilidades combinadas de los tres modelos.
+        Predice probabilidades combinadas de los tres modelos con manejo correcto de dimensiones.
 
         Args:
             X: DataFrame con características.
 
         Returns:
-            np.ndarray: Matriz de probabilidades (n_samples, 3) para [-1, 0, 1].
+            np.ndarray: Matriz de probabilidades (n_samples, 3) para [away_win, draw, home_win].
         """
         try:
-            # Obtener predicciones de cada modelo
-            poisson_proba = self.poisson_model.predict_proba(X)
-            xgboost_proba = self.xgboost_model.predict_proba(X)
-
-            # Para LSTM, necesitamos secuencias. Si X tiene solo una fila, no podemos usar LSTM.
-            if len(X) >= self.lstm_model.input_shape[0]:
-                lstm_proba = self.lstm_model.predict_proba(X)
-                # Ajustar forma si es necesario
-                if len(lstm_proba.shape) == 3:
-                    lstm_proba = lstm_proba[-1]  # Tomar la última predicción
+            n_samples = len(X)
+            
+            # Inicializar matrices de predicción
+            poisson_proba = np.zeros((n_samples, 3))
+            xgboost_proba = np.zeros((n_samples, 3))
+            lstm_proba = np.zeros((n_samples, 3))
+            
+            # Obtener predicciones de Poisson
+            try:
+                p_home, p_draw, p_away = self.poisson_model.predict_proba(X)
+                # Orden: [away_win, draw, home_win]
+                poisson_proba = np.column_stack([p_away, p_draw, p_home])
+            except Exception as e:
+                self.logger.warning(f"Error en Poisson: {e}")
+                poisson_proba = np.ones((n_samples, 3)) / 3
+            
+            # Obtener predicciones de XGBoost
+            try:
+                xgboost_proba = self.xgboost_model.predict_proba(X)
+                if xgboost_proba.shape != (n_samples, 3):
+                    xgboost_proba = np.ones((n_samples, 3)) / 3
+            except Exception as e:
+                self.logger.warning(f"Error en XGBoost: {e}")
+                xgboost_proba = np.ones((n_samples, 3)) / 3
+            
+            # Para LSTM, verificar dimensiones
+            if n_samples >= self.lstm_model.input_shape[0]:
+                try:
+                    lstm_proba = self.lstm_model.predict_proba(X)
+                    if lstm_proba.shape != (n_samples, 3):
+                        # Tomar solo las últimas n_samples predicciones
+                        lstm_proba = lstm_proba[-n_samples:]
+                        if lstm_proba.shape[0] != n_samples:
+                            lstm_proba = np.ones((n_samples, 3)) / 3
+                except Exception as e:
+                    self.logger.warning(f"Error en LSTM: {e}")
+                    lstm_proba = np.ones((n_samples, 3)) / 3
             else:
-                lstm_proba = np.ones((len(X), 3)) / 3  # Probabilidades uniformes
-
-            # Combinar predicciones con pesos
+                lstm_proba = np.ones((n_samples, 3)) / 3
+            
+            # Normalizar pesos
+            total_weight = sum(self.weights.values())
+            if total_weight == 0:
+                total_weight = 1.0
+                
+            # Combinar predicciones
             combined_proba = (
-                self.weights['poisson'] * np.column_stack(poisson_proba) +
-                self.weights['xgboost'] * xgboost_proba +
-                self.weights['lstm'] * lstm_proba
+                (self.weights['poisson'] / total_weight) * poisson_proba +
+                (self.weights['xgboost'] / total_weight) * xgboost_proba +
+                (self.weights['lstm'] / total_weight) * lstm_proba
             )
-
+            
             # Normalizar para que sumen 1
-            combined_proba = combined_proba / combined_proba.sum(axis=1, keepdims=True)
-
+            row_sums = combined_proba.sum(axis=1, keepdims=True)
+            if np.any(row_sums == 0):
+                combined_proba = np.ones((n_samples, 3)) / 3
+            else:
+                combined_proba = combined_proba / row_sums
+            
             return combined_proba
-
         except Exception as e:
-            self.logger.error(f"Error in ensemble prediction: {e}")
-            return np.ones((len(X), 3)) / 3  # Probabilidades uniformes
+            self.logger.error(f"Error en ensemble: {e}")
+            return np.ones((len(X), 3)) / 3
 
     def predict(self, X: pd.DataFrame) -> np.ndarray:
         """Predice la clase más probable (-1, 0, 1)."""
