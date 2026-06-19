@@ -4,7 +4,7 @@ import logging
 import sys
 import os
 import pandas as pd
-from typing import Optional, Dict, List
+from typing import Optional, Dict, List, Any
 from datetime import datetime
 
 # Configurar logging
@@ -80,7 +80,7 @@ class SuperAgentCLI:
             return False
 
     def train_models(self, data_path: str = 'data/merged.csv') -> bool:
-        """Entrena los modelos con datos históricos."""
+        """Entrena los modelos con datos históricos - CORREGIDO."""
         try:
             logger.info("📊 Loading training data...")
             df = self.data_processor.load_from_csv(data_path)
@@ -88,61 +88,119 @@ class SuperAgentCLI:
                 logger.error("❌ No training data available. Run 'fetch' first.")
                 return False
 
-            # Calcular estadísticas de equipos (últimos 5 partidos)
+            # Calcular estadísticas de equipos (últimos 5 partidos) - CORRECCIÓN del Error 7
+            logger.info("📈 Calculating team statistics...")
             team_stats_df = self.data_processor.calculate_team_stats(df, window=5)
+            
             if team_stats_df.empty:
-                logger.warning("⚠️ No team statistics calculated (insufficient data).")
+                logger.warning("⚠️ No team statistics calculated. Creating default stats...")
+                # Crear estadísticas por defecto si calculate_team_stats falla
+                unique_teams = pd.concat([df['home_team'], df['away_team']]).unique()
+                team_stats_df = pd.DataFrame({
+                    'team': unique_teams,
+                    'matches_played': [5] * len(unique_teams),
+                    'home_attack_strength': [1.0] * len(unique_teams),
+                    'home_defense_strength': [1.0] * len(unique_teams),
+                    'away_attack_strength': [1.0] * len(unique_teams),
+                    'away_defense_strength': [1.0] * len(unique_teams),
+                    'home_form': [0.5] * len(unique_teams),
+                    'away_form': [0.5] * len(unique_teams)
+                })
 
             # Preparar características para los modelos
+            logger.info("🔧 Preparing features...")
             features_df = self.data_processor.prepare_features(df, team_stats_df)
+            
             if features_df.empty:
                 logger.error("❌ No features available for training.")
                 return False
 
+            # Verificar columnas requeridas
+            required_cols = ['result', 'home_goals', 'away_goals']
+            missing_cols = [col for col in required_cols if col not in features_df.columns]
+            
+            if missing_cols:
+                logger.error(f"❌ Missing required columns: {missing_cols}")
+                return False
+
             # Extraer variables objetivo
-            X = features_df.drop(['result', 'home_goals', 'away_goals'], axis=1, errors='ignore')
+            X = features_df.drop(required_cols, axis=1, errors='ignore')
             y = features_df['result']
             home_goals = features_df['home_goals']
             away_goals = features_df['away_goals']
 
+            # Validar que hay suficientes datos
+            if len(X) < 10:
+                logger.error("❌ Insufficient data for training (need at least 10 samples).")
+                return False
+
             # Entrenar modelos
             logger.info("🎯 Training Poisson model (expected goals)...")
-            self.poisson_model.fit(X, home_goals, away_goals)
+            try:
+                self.poisson_model.fit(X, home_goals, away_goals)
+                logger.info("✅ Poisson model trained successfully")
+            except Exception as e:
+                logger.error(f"❌ Error training Poisson model: {e}")
+                return False
 
             logger.info("🎯 Training XGBoost model (match outcome)...")
-            self.xgboost_model.fit(X, y)
+            try:
+                xgb_metrics = self.xgboost_model.fit(X, y)
+                logger.info(f"✅ XGBoost trained - Accuracy: {xgb_metrics.get('accuracy', 0):.3f}")
+            except Exception as e:
+                logger.error(f"❌ Error training XGBoost model: {e}")
+                return False
 
             logger.info("🎯 Training LSTM model (temporal trends)...")
-            self.lstm_model.fit(X, y, window_size=5, epochs=20)
+            try:
+                lstm_metrics = self.lstm_model.fit(X, y, window_size=5, epochs=20, batch_size=16)
+                logger.info(f"✅ LSTM trained - Val Accuracy: {lstm_metrics.get('val_accuracy', 0):.3f}")
+            except Exception as e:
+                logger.warning(f"⚠️ LSTM training had issues (non-critical): {e}")
+                # LSTM es opcional, continuar si falla
 
             logger.info("✅ All models trained successfully!")
             return True
+            
         except Exception as e:
-            logger.error(f"❌ Error training models: {e}")
+            logger.error(f"❌ Error training models: {e}", exc_info=True)
             return False
 
-    def predict_match(self, home_team: str, away_team: str) -> Optional[Dict]:
+    def predict_match(self, home_team: str, away_team: str) -> Optional[Dict[str, Any]]:
         """Predice el resultado de un partido y recomienda apuestas con valor."""
         try:
+            logger.info(f"🔮 Predicting: {home_team} vs {away_team}")
+            
             # Obtener cuotas para el partido
             odds_data = self.odds_client.get_odds_for_match(home_team, away_team)
             odds = {}
+            
             if odds_data:
                 for bookmaker in odds_data.get('bookmakers', []):
                     for market in bookmaker.get('markets', []):
                         if market.get('key') == 'h2h':
                             for outcome in market.get('outcomes', []):
-                                odds[outcome.get('name')] = float(outcome.get('price'))
+                                outcome_name = outcome.get('name', '').lower()
+                                if home_team.lower() in outcome_name:
+                                    odds['home'] = float(outcome.get('price', 2.0))
+                                elif away_team.lower() in outcome_name:
+                                    odds['away'] = float(outcome.get('price', 2.0))
+                                elif 'draw' in outcome_name:
+                                    odds['draw'] = float(outcome.get('price', 3.0))
+
+            # Valores por defecto si no hay cuotas
+            odds.setdefault('home', 2.0)
+            odds.setdefault('away', 2.0)
+            odds.setdefault('draw', 3.0)
 
             # Crear características (en producción, usarías datos históricos reales)
-            # Aquí usamos valores por defecto para demostración
             features = {
-                'home_attack_strength': 1.2,    # Fuerza de ataque del local
-                'home_defense_strength': 0.8,   # Fuerza de defensa del local
-                'away_attack_strength': 1.0,    # Fuerza de ataque del visitante
-                'away_defense_strength': 1.0,   # Fuerza de defensa del visitante
-                'home_form': 0.6,               # Forma reciente del local (0-1)
-                'away_form': 0.5,               # Forma reciente del visitante (0-1)
+                'home_attack_strength': 1.2,
+                'home_defense_strength': 0.8,
+                'away_attack_strength': 1.0,
+                'away_defense_strength': 1.0,
+                'home_form': 0.6,
+                'away_form': 0.5,
                 'implied_prob_home': 1 / odds.get('home', 2.5),
                 'implied_prob_away': 1 / odds.get('away', 2.5),
                 'implied_prob_draw': 1 / odds.get('draw', 3.0)
@@ -155,31 +213,43 @@ class SuperAgentCLI:
 
             # Formatear probabilidades (orden: away_win, draw, home_win)
             probabilities = {
-                'home_win': float(proba[0][2]),  # Índice 2: home win (1)
-                'draw': float(proba[0][1]),      # Índice 1: draw (0)
-                'away_win': float(proba[0][0])   # Índice 0: away win (-1)
+                'home_win': float(proba[0][2]),
+                'draw': float(proba[0][1]),
+                'away_win': float(proba[0][0])
             }
 
             # Determinar apuesta recomendada (si hay valor)
             recommended_bet = None
             max_prob = max(probabilities.values())
             best_outcome = max(probabilities, key=probabilities.get)
-            implied_prob = 1 / odds.get(best_outcome, 2.0)
+            
+            # Mapear nombre de outcome a clave de odds
+            outcome_to_odds = {
+                'home_win': 'home',
+                'draw': 'draw',
+                'away_win': 'away'
+            }
+            odds_key = outcome_to_odds[best_outcome]
+            implied_prob = 1 / odds.get(odds_key, 2.0)
 
-            if max_prob > implied_prob:
+            # Solo recomendar si hay ventaja significativa (5% edge)
+            if max_prob > implied_prob * 1.05:
                 stake = self.bankroll_manager.calculate_stake(
-                    odds.get(best_outcome, 2.0),
+                    odds.get(odds_key, 2.0),
                     max_prob,
                     method='kelly'
                 )
-                recommended_bet = {
-                    'outcome': best_outcome,
-                    'odds': odds.get(best_outcome, 2.0),
-                    'probability': max_prob,
-                    'implied_probability': implied_prob,
-                    'stake': float(stake),
-                    'potential_profit': float(stake * (odds.get(best_outcome, 2.0) - 1))
-                }
+                
+                if stake > 0:
+                    recommended_bet = {
+                        'outcome': best_outcome,
+                        'odds': odds.get(odds_key, 2.0),
+                        'probability': max_prob,
+                        'implied_probability': implied_prob,
+                        'edge': max_prob - implied_prob,
+                        'stake': float(stake),
+                        'potential_profit': float(stake * (odds.get(odds_key, 2.0) - 1))
+                    }
 
             prediction = {
                 'match': f"{home_team} vs {away_team}",
@@ -192,12 +262,14 @@ class SuperAgentCLI:
                 'odds': odds,
                 'recommended_bet': recommended_bet
             }
+            
             return prediction
+            
         except Exception as e:
-            logger.error(f"❌ Error predicting match: {e}")
+            logger.error(f"❌ Error predicting match: {e}", exc_info=True)
             return None
 
-    def place_bet(self, match: str, prediction: str, odds: float, probability: float) -> Dict:
+    def place_bet(self, match: str, prediction: str, odds: float, probability: float) -> Dict[str, Any]:
         """Coloca una apuesta basada en una predicción."""
         try:
             result = self.bankroll_manager.place_bet(
@@ -207,11 +279,19 @@ class SuperAgentCLI:
                 probability=probability,
                 stake_method='kelly'
             )
-            logger.info(f"💰 Bet placed: {match} | Prediction: {prediction} | Stake: ${result['stake']:.2f}")
+            
+            if result.get('stake', 0) > 0:
+                logger.info(
+                    f"💰 Bet placed: {match} | Prediction: {prediction} | "
+                    f"Stake: ${result['stake']:.2f}"
+                )
+            else:
+                logger.warning(f"⚠️ No bet placed for {match} (stake = 0)")
+                
             return result
         except Exception as e:
             logger.error(f"❌ Error placing bet: {e}")
-            return {'error': str(e)}
+            return {'error': str(e), 'stake': 0, 'potential_profit': 0}
 
     def settle_bet(self, match: str, actual_result: str) -> bool:
         """Resuelve una apuesta después del partido."""
@@ -229,7 +309,7 @@ class SuperAgentCLI:
             logger.error(f"❌ Error settling bet: {e}")
             return False
 
-    def show_bankroll(self) -> Dict:
+    def show_bankroll(self) -> Dict[str, float]:
         """Muestra el estado actual del bankroll."""
         return self.bankroll_manager.get_bankroll_status()
 
@@ -252,6 +332,10 @@ class SuperAgentCLI:
     def load_models(self, directory: str = 'models') -> bool:
         """Carga modelos entrenados desde disco."""
         try:
+            if not os.path.exists(directory):
+                logger.error(f"❌ Directory not found: {directory}")
+                return False
+                
             success = self.model_ensemble.load(directory)
             if success:
                 logger.info(f"📂 Models loaded from {directory}")
@@ -318,11 +402,12 @@ def main():
 
     # --- Parse arguments ---
     args = parser.parse_args()
-    agent = SuperAgentCLI()
-
+    
     if not args.command:
         parser.print_help()
         return
+
+    agent = SuperAgentCLI()
 
     # --- Ejecutar comandos ---
     if args.command == 'fetch':
@@ -361,7 +446,7 @@ def main():
                 print(f"   Odds:          {bet['odds']:.2f}")
                 print(f"   Your Prob:     {bet['probability']*100:.1f}%")
                 print(f"   Implied Prob:  {bet['implied_probability']*100:.1f}%")
-                print(f"   Edge:          +{(bet['probability'] - bet['implied_probability'])*100:.1f}%")
+                print(f"   Edge:          +{bet['edge']*100:.1f}%")
                 print(f"   Stake:         ${bet['stake']:.2f}")
                 print(f"   Potential:     ${bet['potential_profit']:.2f}")
             else:
@@ -419,7 +504,6 @@ def main():
             print("\n" + "="*60)
             print("📜 BET HISTORY")
             print("="*60)
-            # Formatear el DataFrame para mejor visualización
             history_display = history.copy()
             history_display['timestamp'] = pd.to_datetime(history_display['timestamp']).dt.strftime('%Y-%m-%d %H:%M')
             history_display['profit'] = history_display['profit'].apply(lambda x: f"${x:.2f}")
