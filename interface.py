@@ -1,8 +1,9 @@
 from flask import Flask, request, jsonify, Blueprint
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Any
 import logging
 from datetime import datetime
 import os
+import pandas as pd
 
 # Importar clases de otros módulos
 from data_fetcher import ESPNScraper, OddsAPIClient
@@ -41,7 +42,7 @@ def initialize_components():
     if model_ensemble is None:
         poisson_model = PoissonModel()
         xgboost_model = XGBoostModel()
-        lstm_model = LSTMModel(input_shape=(5, 10))  # Ajustar según características
+        lstm_model = LSTMModel(input_shape=(5, 10))
         model_ensemble = ModelEnsemble(
             poisson_model=poisson_model,
             xgboost_model=xgboost_model,
@@ -53,18 +54,27 @@ predictions_bp = Blueprint('predictions', __name__)
 
 @predictions_bp.route('/predict', methods=['GET'])
 def predict_match():
-    """Endpoint para obtener predicciones de un partido."""
+    """Endpoint para obtener predicciones de un partido con manejo robusto de errores."""
     initialize_components()
 
     home_team = request.args.get('home_team')
     away_team = request.args.get('away_team')
 
     if not home_team or not away_team:
-        return jsonify({'error': 'home_team and away_team parameters are required'}), 400
+        return jsonify({
+            'error': 'Parámetros requeridos',
+            'required': ['home_team', 'away_team']
+        }), 400
 
     try:
-        # Obtener datos del partido (simplificado para el ejemplo)
-        # En una implementación real, buscarías en la base de datos o API
+        # Validar que los modelos estén cargados
+        if model_ensemble is None:
+            return jsonify({
+                'error': 'Modelos no disponibles',
+                'solution': 'Cargar modelos primero usando /api/models/load'
+            }), 503
+
+        # Obtener datos del partido
         match_data = {
             'home_team': home_team,
             'away_team': away_team,
@@ -74,7 +84,7 @@ def predict_match():
             'league': 'Example League'
         }
 
-        # Obtener cuotas (simplificado)
+        # Obtener cuotas
         odds_data = odds_client.get_odds_for_match(home_team, away_team)
         odds = {}
         if odds_data:
@@ -82,10 +92,20 @@ def predict_match():
                 for market in bookmaker.get('markets', []):
                     if market.get('key') == 'h2h':
                         for outcome in market.get('outcomes', []):
-                            odds[outcome.get('name')] = outcome.get('price')
+                            outcome_name = outcome.get('name', '').lower()
+                            if home_team.lower() in outcome_name:
+                                odds['home'] = float(outcome.get('price', 2.0))
+                            elif away_team.lower() in outcome_name:
+                                odds['away'] = float(outcome.get('price', 2.0))
+                            elif 'draw' in outcome_name:
+                                odds['draw'] = float(outcome.get('price', 3.0))
 
-        # Preparar características (simplificado)
-        # En una implementación real, usarías datos históricos y estadísticas
+        # Valores por defecto si no hay cuotas
+        odds.setdefault('home', 2.0)
+        odds.setdefault('away', 2.0)
+        odds.setdefault('draw', 3.0)
+
+        # Preparar características
         features = pd.DataFrame([{
             'home_attack_strength': 1.0,
             'home_defense_strength': 1.0,
@@ -93,23 +113,23 @@ def predict_match():
             'away_defense_strength': 1.0,
             'home_form': 0.5,
             'away_form': 0.5,
-            'implied_prob_home': 1 / odds.get('home', 2.0),
-            'implied_prob_away': 1 / odds.get('away', 2.0),
-            'implied_prob_draw': 1 / odds.get('draw', 3.0)
+            'implied_prob_home': 1 / odds['home'],
+            'implied_prob_away': 1 / odds['away'],
+            'implied_prob_draw': 1 / odds['draw']
         }])
 
         # Predecir con el ensemble
         proba = model_ensemble.predict_proba(features)
         home_goals, away_goals = model_ensemble.get_expected_goals(features)
 
-        # Formatear respuesta
+        # Formatear respuesta (proba orden: [away_win, draw, home_win])
         prediction = {
             'match': f"{home_team} vs {away_team}",
             'timestamp': datetime.now().isoformat(),
             'probabilities': {
-                'home_win': float(proba[0][2]),  # Índice 2 = home win (1)
-                'draw': float(proba[0][1]),     # Índice 1 = draw (0)
-                'away_win': float(proba[0][0])   # Índice 0 = away win (-1)
+                'home_win': float(proba[0][2]),
+                'draw': float(proba[0][1]),
+                'away_win': float(proba[0][0])
             },
             'expected_goals': {
                 'home': float(home_goals[0]),
@@ -119,31 +139,53 @@ def predict_match():
             'recommended_bet': None
         }
 
-        # Determinar apuesta recomendada (si hay ventaja)
-        max_prob = max(prediction['probabilities'].values())
-        best_outcome = max(prediction['probabilities'], key=prediction['probabilities'].get)
-        implied_prob = 1 / odds.get(best_outcome, 2.0)
+        # Determinar apuesta recomendada
+        prob_map = {
+            'home': prediction['probabilities']['home_win'],
+            'draw': prediction['probabilities']['draw'],
+            'away': prediction['probabilities']['away_win']
+        }
+        
+        best_outcome = max(prob_map, key=prob_map.get)
+        max_prob = prob_map[best_outcome]
+        implied_prob = 1 / odds[best_outcome]
 
-        if max_prob > implied_prob:
+        if max_prob > implied_prob * 1.05:  # 5% margen de seguridad
             stake = bankroll_manager.calculate_stake(
-                odds.get(best_outcome, 2.0),
+                odds[best_outcome],
                 max_prob,
                 method='kelly'
             )
             prediction['recommended_bet'] = {
                 'outcome': best_outcome,
-                'odds': odds.get(best_outcome, 2.0),
+                'odds': odds[best_outcome],
                 'probability': max_prob,
                 'implied_probability': implied_prob,
+                'edge': max_prob - implied_prob,
                 'stake': float(stake),
-                'potential_profit': float(stake * (odds.get(best_outcome, 2.0) - 1))
+                'potential_profit': float(stake * (odds[best_outcome] - 1))
             }
 
         return jsonify(prediction)
 
+    except ValueError as e:
+        logger.error(f"Error de validación: {e}")
+        return jsonify({
+            'error': 'Error de validación',
+            'message': str(e)
+        }), 400
+    except KeyError as e:
+        logger.error(f"Falta campo en datos: {e}")
+        return jsonify({
+            'error': 'Campo faltante',
+            'field': str(e)
+        }), 422
     except Exception as e:
-        logger.error(f"Error in predict_match: {e}")
-        return jsonify({'error': str(e)}), 500
+        logger.error(f"Error inesperado: {e}", exc_info=True)
+        return jsonify({
+            'error': 'Error interno del servidor',
+            'message': 'Por favor intente de nuevo más tarde'
+        }), 500
 
 @predictions_bp.route('/predictions', methods=['GET'])
 def get_all_predictions():
@@ -167,9 +209,9 @@ def get_all_predictions():
         if merged_df.empty:
             return jsonify({'error': 'No data available for predictions'}), 404
 
-        # Preparar características (simplificado)
-        # En una implementación real, usarías datos históricos
-        features = data_processor.prepare_features(merged_df, pd.DataFrame())
+        # Calcular estadísticas de equipos
+        team_stats_df = data_processor.calculate_team_stats(merged_df, window=5)
+        features = data_processor.prepare_features(merged_df, team_stats_df)
 
         if features.empty:
             return jsonify({'error': 'No features available for predictions'}), 404
@@ -181,32 +223,35 @@ def get_all_predictions():
         # Formatear respuesta
         predictions = []
         for i, row in merged_df.iterrows():
+            if i >= len(probas):
+                break
+                
             proba = probas[i]
             prediction = {
                 'match': f"{row['home_team']} vs {row['away_team']}",
                 'league': row.get('league', 'Unknown'),
-                'date': row.get('date', 'Unknown'),
+                'date': str(row.get('date', 'Unknown')),
                 'probabilities': {
                     'home_win': float(proba[2]),
                     'draw': float(proba[1]),
                     'away_win': float(proba[0])
                 },
                 'expected_goals': {
-                    'home': float(home_goals[i]),
-                    'away': float(away_goals[i])
+                    'home': float(home_goals[i]) if i < len(home_goals) else 0.0,
+                    'away': float(away_goals[i]) if i < len(away_goals) else 0.0
                 },
                 'odds': {
-                    'home': float(row.get('h2h_home', 0)),
-                    'draw': float(row.get('h2h_draw', 0)),
-                    'away': float(row.get('h2h_away', 0))
+                    'home': float(row.get('h2h_home', 0)) if not pd.isna(row.get('h2h_home')) else 0.0,
+                    'draw': float(row.get('h2h_draw', 0)) if not pd.isna(row.get('h2h_draw')) else 0.0,
+                    'away': float(row.get('h2h_away', 0)) if not pd.isna(row.get('h2h_away')) else 0.0
                 }
             }
             predictions.append(prediction)
 
-        return jsonify({'predictions': predictions})
+        return jsonify({'predictions': predictions, 'count': len(predictions)})
 
     except Exception as e:
-        logger.error(f"Error in get_all_predictions: {e}")
+        logger.error(f"Error in get_all_predictions: {e}", exc_info=True)
         return jsonify({'error': str(e)}), 500
 
 # Blueprint para la API de bankroll
@@ -251,8 +296,8 @@ def place_bet():
         result = bankroll_manager.place_bet(
             match=data['match'],
             prediction=data['prediction'],
-            odds=data['odds'],
-            probability=data['probability'],
+            odds=float(data['odds']),
+            probability=float(data['probability']),
             stake_method=data.get('stake_method', 'kelly')
         )
 
@@ -297,40 +342,49 @@ def train_models():
     """Endpoint para entrenar los modelos con datos históricos."""
     initialize_components()
     try:
-        # Obtener datos históricos (simplificado)
-        # En una implementación real, cargarías datos de un archivo o base de datos
-        historical_matches = scraper.fetch_historical_matches("Barcelona", "2023")
-        if not historical_matches:
-            return jsonify({'error': 'No historical data available'}), 404
+        data_path = request.args.get('data_path', 'data/merged.csv')
+        
+        # Cargar datos
+        if not os.path.exists(data_path):
+            return jsonify({'error': f'Data file not found: {data_path}'}), 404
+            
+        df = data_processor.load_from_csv(data_path)
+        if df.empty:
+            return jsonify({'error': 'No data in file'}), 400
 
-        # Procesar datos
-        matches_df = data_processor.clean_match_data(historical_matches)
-        team_stats_df = data_processor.calculate_team_stats(matches_df)
-        features_df = data_processor.prepare_features(matches_df, team_stats_df)
+        # Calcular estadísticas
+        team_stats_df = data_processor.calculate_team_stats(df, window=5)
+        features_df = data_processor.prepare_features(df, team_stats_df)
 
         if features_df.empty:
-            return jsonify({'error': 'No features available for training'}), 404
+            return jsonify({'error': 'No features available for training'}), 400
 
-        # Entrenar modelos
-        X = features_df.drop(['result'], axis=1, errors='ignore')
+        # Preparar datos
+        required_cols = ['result', 'home_goals', 'away_goals']
+        if not all(col in features_df.columns for col in required_cols):
+            return jsonify({'error': f'Missing required columns: {required_cols}'}), 400
+
+        X = features_df.drop(required_cols, axis=1, errors='ignore')
         y = features_df['result']
-
-        # Entrenar Poisson
         home_goals = features_df['home_goals']
         away_goals = features_df['away_goals']
+
+        # Entrenar modelos
         model_ensemble.poisson_model.fit(X, home_goals, away_goals)
+        xgb_metrics = model_ensemble.xgboost_model.fit(X, y)
+        lstm_metrics = model_ensemble.lstm_model.fit(X, y, window_size=5, epochs=10)
 
-        # Entrenar XGBoost
-        model_ensemble.xgboost_model.fit(X, y)
-
-        # Entrenar LSTM (necesita secuencias)
-        # Simplificado: usar solo los últimos 5 partidos
-        model_ensemble.lstm_model.fit(X, y, window_size=5, epochs=10)
-
-        return jsonify({'status': 'success', 'message': 'Models trained'})
+        return jsonify({
+            'status': 'success',
+            'message': 'Models trained',
+            'metrics': {
+                'xgboost': xgb_metrics,
+                'lstm': lstm_metrics
+            }
+        })
 
     except Exception as e:
-        logger.error(f"Error in train_models: {e}")
+        logger.error(f"Error in train_models: {e}", exc_info=True)
         return jsonify({'error': str(e)}), 500
 
 @models_bp.route('/save', methods=['POST'])
@@ -354,6 +408,9 @@ def load_models():
     initialize_components()
     try:
         directory = request.args.get('directory', 'models')
+        if not os.path.exists(directory):
+            return jsonify({'error': f'Directory not found: {directory}'}), 404
+            
         success = model_ensemble.load(directory)
         if success:
             return jsonify({'status': 'success', 'message': f'Models loaded from {directory}'})
@@ -374,6 +431,7 @@ def index():
     return jsonify({
         'name': 'SuperAgent Football Betting API',
         'version': '1.0.0',
+        'status': 'running',
         'endpoints': {
             'predictions': {
                 'predict': '/api/predictions/predict?home_team=TeamA&away_team=TeamB',
@@ -386,12 +444,22 @@ def index():
                 'settle_bet': '/api/bankroll/settle_bet (POST)'
             },
             'models': {
-                'train': '/api/models/train (POST)',
+                'train': '/api/models/train?data_path=data/merged.csv (POST)',
                 'save': '/api/models/save?directory=models (POST)',
                 'load': '/api/models/load?directory=models (POST)'
             }
         }
     })
 
+@app.errorhandler(404)
+def not_found(error):
+    return jsonify({'error': 'Endpoint not found'}), 404
+
+@app.errorhandler(500)
+def internal_error(error):
+    return jsonify({'error': 'Internal server error'}), 500
+
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000, debug=True)
+    import os
+    debug_mode = os.getenv('FLASK_DEBUG', 'false').lower() == 'true'
+    app.run(host='0.0.0.0', port=5000, debug=debug_mode)
