@@ -21,20 +21,6 @@ jobs:
       - name: Instalar Entorno de Ejecución
         run: pip install openai requests
 
-      - name: 🔍 Depuración de Conectividad (Checklist Punto 5)
-        env:
-          NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
-        run: |
-          echo "Verificando respuesta del endpoint de NVIDIA..."
-          curl -s -o /dev/null -w "%{http_code}" -H "Authorization: Bearer $NVIDIA_API_KEY" "https://integrate.api.nvidia.com/v1/models" > http_status.txt
-          STATUS=$(cat http_status.txt)
-          echo "Código de estado HTTP devuelto por el servidor: $STATUS"
-          if [ "$STATUS" -ne 200 ]; then
-            echo "⚠️ Advertencia: El servidor no devolvió un código 200 (OK). Posible problema de API Key o URL."
-          else
-            echo "✅ Conexión base con la API de NVIDIA establecida correctamente."
-          fi
-
       - name: Ejecutar Inteligencia Artificial Nemotron
         env:
           NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
