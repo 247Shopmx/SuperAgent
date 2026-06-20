@@ -1,42 +1,41 @@
 name: 🌀 Nemotron Ultra - Escaneo y Actualización Total
 
 on:
-  workflow_dispatch: # Permite ejecutarlo manualmente con un botón desde GitHub cuando quieras actualizar
+  workflow_dispatch: # Activa el botón manual en la web de GitHub
 
 jobs:
   upgrade-repo:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout del código fuente
+      - name: Descargar Repositorio 247Shopmx/SuperAgent
         uses: actions/checkout@v4
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Configurar entorno de Python
+      - name: Configurar Python 3.10
         uses: actions/setup-python@v5
         with:
           python-version: '3.10'
 
-      - name: Instalar dependencias del orquestador
+      - name: Instalar Entorno de Ejecución
         run: pip install openai requests
 
-      - name: Ejecutar Escaneo Inteligente de Nemotron
+      - name: Ejecutar Inteligencia Artificial Nemotron-3 Ultra
         env:
           NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
         run: python .github/scripts/deep_scan.py
 
-      - name: Guardar cambios e implementar mejoras de Nemotron al Repositorio
+      - name: Desplegar y Confirmar Mejoras en Main
         run: |
-          git config --global user.name "Nemotron Ultra Copilot"
+          git config --global user.name "Nemotron 550B Copilot"
           git config --global user.email "nemotron-copilot@nvidia.ai"
           
-          # Verificar si hay cambios reales en el código
           if [ -n "$(git status --porcelain)" ]; then
-            echo "✨ Nemotron aplicó mejoras al código. Subiendo cambios..."
+            echo "✨ Nemotron ha reconstruido el repositorio con mejoras. Subiendo cambios..."
             git add .
-            git commit -m "🤖 Nemotron Ultra: Optimización y refactorización del repositorio completa"
+            git commit -m "🤖 Nemotron Ultra 550B: Refactorización e infraestructura de Value Betting completa"
             git push origin HEAD:${{ github.ref_name }}
           else
-            echo "⚡ El código ya se encuentra en su estado óptimo. No se requirieron cambios."
+            echo "⚡ El repositorio ya está en su versión óptima."
           fi
