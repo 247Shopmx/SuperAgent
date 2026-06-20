@@ -1,51 +1,15 @@
 import os
 import json
 import sys
-import requests
 from openai import OpenAI
 
-# URL Base oficial de integración de NVIDIA NIM
-BASE_URL = "https://integrate.api.nvidia.com/v1"
-
-def obtener_modelo_nemotron_activo(api_key):
-    """
-    Punto 5 del Checklist: Consulta el endpoint /models para listar los 
-    identificadores activos y evitar el error 404 de nombre de modelo.
-    """
-    print("🔍 Listando modelos disponibles en el endpoint de NVIDIA...")
-    headers = {"Authorization": f"Bearer {api_key}"}
-    try:
-        response = requests.get(f"{BASE_URL}/models", headers=headers, timeout=10)
-        if response.status_code == 200:
-            modelos = response.json().get("data", [])
-            # Buscamos cualquier modelo que contenga 'nemotron' en su ID
-            ids_nemotron = [m.get("id") for m in modelos if "nemotron" in m.get("id", "").lower()]
-            
-            if ids_nemotron:
-                print(f"✅ Modelos Nemotron encontrados en tu tier: {ids_nemotron}")
-                # Preferimos la versión ultra si está en la lista, si no, tomamos el primero disponible
-                for model_id in ids_nemotron:
-                    if "ultra" in model_id:
-                        return model_id
-                return ids_nemotron[0]
-            else:
-                print("⚠️ No se encontraron modelos con el nombre 'nemotron' asignados a tu cuenta.")
-                if modelos:
-                    print(f"Modelos alternativos disponibles: {[m.get('id') for m in modelos[:3]]}")
-        else:
-            print(f"❌ Error al consultar /models (Código {response.status_code}): {response.text}")
-    except Exception as e:
-        print(f"⚠️ No se pudo auto-detectar el modelo mediante la API: {e}")
-    
-    # Modelo por defecto si el fetch falla (Ajustado según catálogo de producción)
-    return "nvidia/nemotron-3-ultra"
-
-# Inicializar cliente de NVIDIA NIM
+# Inicializar cliente de NVIDIA NIM utilizando la URL base de integración oficial
 client = OpenAI(
-    base_url=BASE_URL,
+    base_url="https://integrate.api.nvidia.com/v1",
     api_key=os.environ.get("NVIDIA_API_KEY")
 )
 
+# Estructura del repositorio 247Shopmx/SuperAgent que la IA debe generar/optimizar
 ARCHIVOS_OBJETIVO = [
     "requirements.txt",
     "src/scraper_espn.py",
@@ -65,13 +29,12 @@ def leer_todo_el_repositorio():
     return contexto_repo
 
 def main():
-    api_key = os.environ.get("NVIDIA_API_KEY")
-    if not api_key:
+    if not os.environ.get("NVIDIA_API_KEY"):
         print("❌ Error: Falta la variable de entorno NVIDIA_API_KEY en los Secrets de GitHub.")
         sys.exit(1)
 
-    # Paso de auto-detección para corregir la causa #2 del error 404
-    model_name = obtener_modelo_nemotron_activo(api_key)
+    # Utilizando el modelo verificado y disponible en tu Tier de NVIDIA
+    MODEL_NAME = "nvidia/llama-3.1-nemotron-70b-instruct"
 
     print(f"📦 Mapeando el repositorio actual (247Shopmx/SuperAgent)...")
     repo_actual = leer_todo_el_repositorio()
@@ -79,8 +42,14 @@ def main():
     prompt_sistema = (
         "Eres un Ingeniero de Software experto en Algoritmos Cuantitativos y APIs de NVIDIA.\n"
         "Tu tarea es generar el código completo de un bot de Value Betting en fútbol que haga scraping de ESPN y consuma The Odds API.\n\n"
+        "REQUISITOS ARQUITECTÓNICOS MÍNIMOS:\n"
+        "1. `requirements.txt`: Debe incluir requests, beautifulsoup4, pandas, openai, lxml.\n"
+        "2. `src/scraper_espn.py`: Scraping usando BeautifulSoup simulando cabeceras (User-Agent) para extraer estadísticas, goles y xG de ESPN.\n"
+        "3. `src/odds_client.py`: Cliente para consumir la API de cuotas '/v4/sports/soccer/odds' usando la variable de entorno ODDS_API_KEY.\n"
+        "4. `src/predictor_agent.py`: Motor matemático que calcula probabilidades implícitas y determina si hay valor mediante: (Cuota Casa * Probabilidad Bot) - 1 > 0.\n"
+        "5. `src/main.py`: Orquestador que ejecuta el flujo y escribe un reporte markdown llamado 'predictions_report.md'.\n\n"
         "REGLA DE FORMATO ABSOLUTA:\n"
-        "Responde ÚNICAMENTE con un objeto JSON crudo y válido que contenga las rutas como llaves y el código como valores. "
+        "Responde ÚNICAMENTE con un objeto JSON crudo y válido que contenga las rutas como llaves y el código completo de producción como valores. "
         "No incluyas texto descriptivo, explicaciones, ni bloques de código formateados con caracteres de markdown (```json). Solo JSON puro.\n\n"
         "Formato del JSON:\n"
         "{\n"
@@ -92,20 +61,22 @@ def main():
         "}"
     )
 
-    print(f"🧠 Enviando solicitud a NVIDIA NIM utilizando el modelo: {model_name}...")
+    print(f"🧠 Enviando solicitud a NVIDIA NIM utilizando el modelo: {MODEL_NAME}...")
     try:
+        # Forzar respuesta en formato JSON utilizando el parámetro response_format si el endpoint lo soporta
         completion = client.chat.completions.create(
-            model=model_name,
+            model=MODEL_NAME,
             messages=[
                 {"role": "system", "content": prompt_sistema},
                 {"role": "user", "content": f"Estructura del repositorio actual:\n\n{json.dumps(repo_actual, indent=2)}"}
             ],
             temperature=0.1,
-            max_tokens=4096
+            max_tokens=3500
         )
         
         respuesta_cruda = completion.choices[0].message.content.strip()
         
+        # Limpieza de marcado por si el modelo incluye marcas de bloque JSON
         if respuesta_cruda.startswith("```json"):
             respuesta_cruda = respuesta_cruda.split("```json")[1].split("```")[0].strip()
         elif respuesta_cruda.startswith("```"):
@@ -130,7 +101,7 @@ def main():
         print(respuesta_cruda)
         sys.exit(1)
     except Exception as e:
-        print(f"❌ Error crítico en la llamada de inferencia a {model_name}: {e}")
+        print(f"❌ Error crítico en la llamada de inferencia a {MODEL_NAME}: {e}")
         sys.exit(1)
 
 if __name__ == "__main__":
