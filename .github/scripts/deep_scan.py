@@ -3,13 +3,13 @@ import json
 import sys
 from openai import OpenAI
 
-# Inicializar cliente de NVIDIA NIM con la URL de la API v1 de integración
+# Inicializar cliente de NVIDIA NIM para Nemotron-3 Ultra 550B
 client = OpenAI(
     base_url="https://integrate.api.nvidia.com/v1",
     api_key=os.environ.get("NVIDIA_API_KEY")
 )
 
-# Archivos del bot de predicciones que Nemotron mantendrá, estructurará y mejorará
+# Definición de la estructura limpia de tu repositorio SuperAgent
 ARCHIVOS_OBJETIVO = [
     "requirements.txt",
     "src/scraper_espn.py",
@@ -25,56 +25,55 @@ def leer_todo_el_repositorio():
             with open(ruta, "r", encoding="utf-8") as f:
                 contexto_repo[ruta] = f.read()
         else:
-            # Si el archivo no existe, le pasamos una directiva para que lo cree
-            contexto_repo[ruta] = f"# Implementar aquí la lógica completa para {ruta}"
+            # Plantilla inicial para indicarle a Nemotron qué construir desde cero
+            contexto_repo[ruta] = f"# Crear la estructura inicial de código para {ruta}"
     return contexto_repo
 
 def main():
     if not os.environ.get("NVIDIA_API_KEY"):
-        print("❌ Error: La variable de entorno NVIDIA_API_KEY no está configurada.")
+        print("❌ Error: Falta la variable de entorno NVIDIA_API_KEY en los Secrets del repositorio.")
         sys.exit(1)
 
-    print("📦 Leyendo el estado actual del repositorio...")
+    print("📦 Mapeando la estructura del repositorio 247Shopmx/SuperAgent...")
     repo_actual = leer_todo_el_repositorio()
     
     prompt_sistema = (
-        "Eres Nemotron-3 Ultra (550B), un Ingeniero de Software Principal de nivel mundial.\n"
-        "Tu tarea es recibir el mapa de archivos de un bot de predicciones deportivas de valor (que consume ESPN y The Odds API) "
-        "y reescribir TODOS los archivos especificados para optimizarlos al máximo nivel de producción.\n\n"
-        "REQUISITOS TÉCNICOS DE LOS ARCHIVOS:\n"
-        "1. `requirements.txt`: Debe incluir requests, beautifulsoup4, pandas, openai y lxml.\n"
-        "2. `src/scraper_espn.py`: Scraping robusto usando BeautifulSoup y Headers (User-Agent) simulación para extraer estadísticas e historial de equipos de fútbol desde ESPN.\n"
-        "3. `src/odds_client.py`: Cliente funcional que consuma la API de cuotas '/v4/sports/soccer/odds' de The Odds API usando la variable de entorno ODDS_API_KEY.\n"
-        "4. `src/predictor_agent.py`: Motor matemático que cruza las estadísticas y calcula cuotas teóricas (Poisson/frecuencia). Aplica la fórmula de valor: (Cuota Casa * Probabilidad Agente) - 1 > 0.\n"
-        "5. `src/main.py`: Ejecutor principal que orquesta los módulos y genera un archivo markdown llamado 'predictions_report.md' con los resultados.\n\n"
-        "REGLA ESTRICTA DE SALIDA:\n"
-        "Debes responder EXCLUSIVAMENTE con un objeto JSON válido que contenga el mapa de los archivos. "
-        "No incluyas texto explicativo, saludos, ni bloques de código formateados con triple comilla (```json). Solo el JSON puro.\n\n"
-        "Estructura exacta del JSON esperado:\n"
+        "Eres Nemotron-3 Ultra (550B), un Ingeniero de Software Principal de NVIDIA y experto en Algoritmos Cuantitativos.\n"
+        "Tu tarea es sobrescribir y crear la lógica completa para un bot autónomo de Value Betting (Apuestas de valor) en fútbol.\n\n"
+        "REQUISITOS ARQUITECTÓNICOS MÍNIMOS:\n"
+        "1. `requirements.txt`: Debe congelar dependencias estables: requests, beautifulsoup4, pandas, openai, lxml.\n"
+        "2. `src/scraper_espn.py`: Scraping modular usando BeautifulSoup con simulación de cabeceras (User-Agent) para extraer estadísticas históricas, goles a favor/en contra y xG de ESPN.\n"
+        "3. `src/odds_client.py`: Integración limpia con The Odds API ('/v4/sports/soccer/odds') usando la variable de entorno ODDS_API_KEY para jalar cuotas en tiempo real.\n"
+        "4. `src/predictor_agent.py`: Cerebro matemático que cruza datos de ESPN contra las cuotas reales. Debe calcular probabilidades implícitas y determinar si hay valor mediante: (Cuota de Casa * Probabilidad del Bot) - 1 > 0.\n"
+        "5. `src/main.py`: Orquestador global. Debe llamar al scraper, jalar las cuotas, pasar el filtro del predictor y escribir un reporte analítico exhaustivo en un archivo markdown llamado 'predictions_report.md'.\n\n"
+        "REGLA DE FORMATO ABSOLUTA:\n"
+        "Responde ÚNICAMENTE con un objeto JSON crudo y válido que contenga las rutas como llaves y el código como valores. "
+        "No incluyas texto descriptivo, explicaciones, ni bloques de código formateados con caracteres de markdown (```json). Solo JSON puro.\n\n"
+        "Formato del JSON:\n"
         "{\n"
-        '  "requirements.txt": "contenido...",\n'
-        '  "src/scraper_espn.py": "contenido...",\n'
-        '  "src/odds_client.py": "contenido...",\n'
-        '  "src/predictor_agent.py": "contenido...",\n'
-        '  "src/main.py": "contenido..."\n'
+        '  "requirements.txt": "codigo...",\n'
+        '  "src/scraper_espn.py": "codigo...",\n'
+        '  "src/odds_client.py": "codigo...",\n'
+        '  "src/predictor_agent.py": "codigo...",\n'
+        '  "src/main.py": "codigo..."\n'
         "}"
     )
 
-    print("🧠 Enviando repositorio completo a Nemotron-3 Ultra 550B para refactorización profunda...")
+    print("🧠 Conectando con Nemotron-3 Ultra 550B. Procesando análisis estructural del repositorio...")
     try:
         completion = client.chat.completions.create(
             model="nvidia/nemotron-3-ultra-550b",
             messages=[
                 {"role": "system", "content": prompt_sistema},
-                {"role": "user", "content": f"Aquí está mi repositorio actual en formato JSON:\n\n{json.dumps(repo_actual, indent=2)}"}
+                {"role": "user", "content": f"Este es el estado de mi repositorio actual:\n\n{json.dumps(repo_actual, indent=2)}"}
             ],
-            temperature=0.1,  # Minimiza alucinaciones matemáticas y de sintaxis
+            temperature=0.1,  # Temperatura baja para asegurar consistencia en código de ingeniería
             max_tokens=4096
         )
         
         respuesta_cruda = completion.choices[0].message.content.strip()
         
-        # Limpieza de seguridad en caso de que el modelo use delimitadores de markdown involuntariamente
+        # Limpieza de salvaguarda por si se incluyen caracteres markdown de manera involuntaria
         if respuesta_cruda.startswith("```json"):
             respuesta_cruda = respuesta_cruda.split("```json")[1].split("```")[0].strip()
         elif respuesta_cruda.startswith("```"):
@@ -82,24 +81,24 @@ def main():
 
         archivos_mejorados = json.loads(respuesta_cruda)
         
-        print("💾 Nemotron ha generado el código optimizado de forma exitosa. Escribiendo archivos locales...")
+        print("💾 Análisis completado. Inyectando código optimizado en el entorno local...")
         for ruta, contenido in archivos_mejorados.items():
-            # Crear directorios src/ si no existen previamente
             directorio = os.path.dirname(ruta)
             if directorio:
                 os.makedirs(directorio, exist_ok=True)
                 
             with open(ruta, "w", encoding="utf-8") as f:
                 f.write(contenido)
-            print(f"✅ {ruta} actualizado y optimizado.")
+            print(f"✅ Archivo configurado de forma autónoma: {ruta}")
             
-        print("🚀 Refactorización completa realizada por Nemotron con éxito.")
+        print("🚀 Proceso terminado con éxito. Todos los componentes han sido actualizados.")
 
-    except json.JSONDecodeError as je:
-        print(f"❌ Error al decodificar el JSON de Nemotron. Respuesta recibida:\n{respuesta_cruda}")
+    except json.JSONDecodeError:
+        print("❌ Error: Nemotron no devolvió un JSON limpio. Respuesta obtenida:")
+        print(respuesta_cruda)
         sys.exit(1)
     except Exception as e:
-        print(f"❌ Error crítico durante el escaneo y actualización: {e}")
+        print(f"❌ Error crítico en el canal de comunicación: {e}")
         sys.exit(1)
 
 if __name__ == "__main__":
