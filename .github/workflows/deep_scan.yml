@@ -1,7 +1,7 @@
 name: 🌀 Nemotron Ultra - Escaneo y Actualización Total
 
 on:
-  workflow_dispatch: # Activa el botón manual en la web de GitHub
+  workflow_dispatch: # Permite la ejecución manual desde la pestaña Actions en la web de GitHub
 
 jobs:
   upgrade-repo:
@@ -21,7 +21,21 @@ jobs:
       - name: Instalar Entorno de Ejecución
         run: pip install openai requests
 
-      - name: Ejecutar Inteligencia Artificial Nemotron-3 Ultra
+      - name: 🔍 Depuración de Conectividad (Checklist Punto 5)
+        env:
+          NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
+        run: |
+          echo "Verificando respuesta del endpoint de NVIDIA..."
+          curl -s -o /dev/null -w "%{http_code}" -H "Authorization: Bearer $NVIDIA_API_KEY" "https://integrate.api.nvidia.com/v1/models" > http_status.txt
+          STATUS=$(cat http_status.txt)
+          echo "Código de estado HTTP devuelto por el servidor: $STATUS"
+          if [ "$STATUS" -ne 200 ]; then
+            echo "⚠️ Advertencia: El servidor no devolvió un código 200 (OK). Posible problema de API Key o URL."
+          else
+            echo "✅ Conexión base con la API de NVIDIA establecida correctamente."
+          fi
+
+      - name: Ejecutar Inteligencia Artificial Nemotron
         env:
           NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
         run: python .github/scripts/deep_scan.py
@@ -34,8 +48,8 @@ jobs:
           if [ -n "$(git status --porcelain)" ]; then
             echo "✨ Nemotron ha reconstruido el repositorio con mejoras. Subiendo cambios..."
             git add .
-            git commit -m "🤖 Nemotron Ultra 550B: Refactorización e infraestructura de Value Betting completa"
+            git commit -m "🤖 Nemotron Ultra: Refactorización e infraestructura de Value Betting completa"
             git push origin HEAD:${{ github.ref_name }}
           else
-            echo "⚡ El repositorio ya está en su versión óptima."
+            echo "⚡ El repositorio ya está en su versión óptima. No se requirieron cambios."
           fi
