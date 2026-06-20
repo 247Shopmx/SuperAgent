@@ -1,0 +1,42 @@
+name: 🌀 Nemotron Ultra - Escaneo y Actualización Total
+
+on:
+  workflow_dispatch: # Permite ejecutarlo manualmente con un botón desde GitHub cuando quieras actualizar
+
+jobs:
+  upgrade-repo:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout del código fuente
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configurar entorno de Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Instalar dependencias del orquestador
+        run: pip install openai requests
+
+      - name: Ejecutar Escaneo Inteligente de Nemotron
+        env:
+          NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
+        run: python .github/scripts/deep_scan.py
+
+      - name: Guardar cambios e implementar mejoras de Nemotron al Repositorio
+        run: |
+          git config --global user.name "Nemotron Ultra Copilot"
+          git config --global user.email "nemotron-copilot@nvidia.ai"
+          
+          # Verificar si hay cambios reales en el código
+          if [ -n "$(git status --porcelain)" ]; then
+            echo "✨ Nemotron aplicó mejoras al código. Subiendo cambios..."
+            git add .
+            git commit -m "🤖 Nemotron Ultra: Optimización y refactorización del repositorio completa"
+            git push origin HEAD:${{ github.ref_name }}
+          else
+            echo "⚡ El código ya se encuentra en su estado óptimo. No se requirieron cambios."
+          fi
